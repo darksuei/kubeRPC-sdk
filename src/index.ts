@@ -1,6 +1,6 @@
 // kuberpc-sdk/index.ts
 import * as https from "https";
-import axios, { AxiosInstance } from "axios";
+import axios, { AxiosInstance, HttpStatusCode } from "axios";
 import {
   DeleteMethodPayload,
   InvokeMethodPayload,
@@ -11,6 +11,9 @@ import {
   StartPayload,
 } from "./@types";
 import net, { Socket } from "net";
+import { handleError, KubeRpcError } from "./utils/error";
+import { ConnectionState, KubeRpcErrorEnum } from "./utils/constants";
+import { KubeConnectionHandler } from "./utils/socket";
 
 export class KubeRPC {
   private apiClient: AxiosInstance;
@@ -19,6 +22,7 @@ export class KubeRPC {
   });
   private methodHandlers = new Map<string, MethodHandlerType>();
   private server: net.Server | null = null;
+  private connectionState = ConnectionState.DISCONNECTED;
 
   constructor({ apiBaseURL }: KubeRPCConfig) {
     this.apiClient = axios.create({
@@ -28,70 +32,115 @@ export class KubeRPC {
       },
       httpsAgent: this.httpsAgent,
     });
+
+    this.apiClient.interceptors.response.use(
+      (response) => response,
+      (error) => handleError(error),
+    );
   }
 
-  async start({ port }: StartPayload) {
-    this.server = net.createServer((socket) => {
-      console.log("Client connected.");
-
-      socket.on("data", (data) => {
-        console.log("Data received: ", data.toString());
-        const request: InvokeMethodPayload = JSON.parse(data.toString());
-        const { serviceName, method } = request;
-        const { params } = method;
-
-        // Check if the method exists
-        const handler = this.methodHandlers.get(
-          `${serviceName}:${method.name}`,
+  async validateEndpoint(endpoint?: string) {
+    try {
+      if (!endpoint)
+        throw new KubeRpcError(
+          KubeRpcErrorEnum.InvalidEndpoint,
+          `Invalid kubeRPC API endpoint: endpoint is not provided.`,
         );
 
-        console.log(handler);
+      const response = await this.apiClient.get("/health");
 
-        if (handler) {
-          try {
-            // Call the method
-            const result = handler(...params);
-            console.log("Handler result", result);
-            socket.write(JSON.stringify({ result }));
-          } catch (error) {
-            socket.write(JSON.stringify({ error: "Error executing method" }));
-          }
-        } else {
-          socket.write(JSON.stringify({ error: "Method not found" }));
-        }
-      });
+      if (response.status !== HttpStatusCode.Ok) {
+        throw new KubeRpcError(
+          KubeRpcErrorEnum.InvalidEndpoint,
+          `Invalid kubeRPC API endpoint: received status code ${response.status}.`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof KubeRpcError) throw error;
 
-      socket.on("end", () => {
-        console.log("Client disconnected.");
-      });
-    });
-
-    this.server.listen(port, () => {
-      console.log(`Service listening on port ${port}`);
-    });
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.InvalidEndpoint,
+        `Invalid kubeRPC API endpoint: Unexpected error while validating kubeRPC API endpoint}`,
+      );
+    }
   }
 
-  // Method to register an array of methods
-  async registerMethod({
+  // Todos:
+  // - Socket timeouts
+  // - Handler retries
+  // - Handler timeouts etc
+  async initialize({ port }: StartPayload) {
+    try {
+      await this.validateEndpoint(this.apiClient.defaults.baseURL);
+      const kubeConnectionHander = new KubeConnectionHandler();
+
+      this.server = net.createServer((socket) => {
+        this.connectionState = ConnectionState.CONNECTING;
+
+        socket.on("data", (data) => {
+          this.connectionState = ConnectionState.CONNECTED;
+          kubeConnectionHander.recievedData(socket, data, this.methodHandlers);
+        });
+
+        socket.on("end", () => {
+          this.connectionState = ConnectionState.DISCONNECTED;
+        });
+
+        socket.on("error", (error) => {
+          this.connectionState = ConnectionState.ERROR;
+          kubeConnectionHander.connectionTerminatedHandler(socket);
+        });
+      });
+
+      this.server.listen(port, () => {
+        kubeConnectionHander.newConnectionHandler(port);
+      });
+    } catch (error: any) {
+      if (error instanceof KubeRpcError) throw error;
+
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.InternalServerError,
+        `Error initializing KubeRPC service: ${error.message}`,
+      );
+    }
+  }
+
+  async registerSingleMethod({
     host,
     port,
     serviceName,
     method,
-  }: RegisterMethodPayload): Promise<any> {
-    const payload = {
-      host,
-      port,
-      service_name: serviceName,
-      methods: [method],
-    };
+  }: RegisterMethodPayload): Promise<void> {
+    try {
+      const payload = {
+        host,
+        port,
+        service_name: serviceName,
+        methods: [method],
+      };
 
-    this.methodHandlers.set(`${serviceName}:${method.name}`, method.handler);
+      // Store a ref to the method's handler in memory
+      this.methodHandlers.set(`${serviceName}:${method.name}`, method.handler);
 
-    const response = await this.apiClient.post(
-      "/register-service-method",
-      payload,
-    );
-    return response.data;
+      // Associate the method with the service
+      const { status } = await this.apiClient.post(
+        "/register-service-method",
+        payload,
+      );
+
+      if (status !== HttpStatusCode.Ok)
+        throw new KubeRpcError(
+          KubeRpcErrorEnum.RegisterMethodError,
+          `Error registering method for service ${serviceName}`,
+        );
+    } catch (error: any) {
+      if (error instanceof KubeRpcError) throw error;
+
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.RegisterMethodError,
+        `Error registering method ${method.name} for service ${serviceName}: ${error.message}`,
+      );
+    }
   }
 
   // Method to register an array of methods
@@ -100,77 +149,117 @@ export class KubeRPC {
     port,
     serviceName,
     methods,
-  }: RegisterMethodsPayload): Promise<any> {
-    const payload = {
-      host,
-      port,
-      service_name: serviceName,
-      methods,
-    };
+  }: RegisterMethodsPayload): Promise<void> {
+    try {
+      const payload = {
+        host,
+        port,
+        service_name: serviceName,
+        methods,
+      };
 
-    methods.forEach(({ name, handler }) => {
-      this.methodHandlers.set(`${serviceName}:${name}`, handler);
-    });
+      methods.forEach(({ name, handler }) => {
+        this.methodHandlers.set(`${serviceName}:${name}`, handler);
+      });
 
-    const response = await this.apiClient.post(
-      "/register-service-method",
-      payload,
-    );
-    return response.data;
+      const { status } = await this.apiClient.post(
+        "/register-service-method",
+        payload,
+      );
+
+      if (status !== HttpStatusCode.Ok)
+        throw new KubeRpcError(
+          KubeRpcErrorEnum.RegisterMethodError,
+          `Error registering methods for service ${serviceName}`,
+        );
+    } catch (error: any) {
+      if (error instanceof KubeRpcError) throw error;
+
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.RegisterMethodError,
+        `Error registering methods for service ${serviceName}: ${error.message}`,
+      );
+    }
   }
 
   // Method to delete a service function
-  async deleteServiceMethod({
+  async deleteMethod({
     serviceName,
     methodName,
-  }: DeleteMethodPayload): Promise<any> {
-    this.methodHandlers.delete(`${serviceName}:${methodName}`);
+  }: DeleteMethodPayload): Promise<void> {
+    try {
+      this.methodHandlers.delete(`${serviceName}:${methodName}`);
 
-    const response = await this.apiClient.delete(
-      `/delete-service-method?name=${serviceName}&method=${methodName}`,
-    );
-    return response.data;
+      const { status } = await this.apiClient.delete(
+        `/delete-service-method?name=${serviceName}&method=${methodName}`,
+      );
+
+      if (status !== HttpStatusCode.Ok)
+        throw new KubeRpcError(
+          KubeRpcErrorEnum.DeleteMethodError,
+          `Error deleting method for service ${serviceName}`,
+        );
+    } catch (error: any) {
+      if (error instanceof KubeRpcError) throw error;
+
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.DeleteMethodError,
+        `Error deleting method ${methodName} for service ${serviceName}: ${error.message}`,
+      );
+    }
   }
 
   async invokeMethod({
     serviceName,
     method,
   }: InvokeMethodPayload): Promise<any> {
-    const response = await this.apiClient.get(
-      `/get-service-method?name=${serviceName}&method=${method.name}`,
-    );
+    try {
+      const response = await this.apiClient.get(
+        `/get-service-method?name=${serviceName}&method=${method.name}`,
+      );
 
-    if (!response.data.host || !response.data.port) {
-      throw new Error(
-        `Method ${method.name} does not exist in service ${serviceName}`,
+      if (
+        response.status !== HttpStatusCode.Ok ||
+        !response.data.host ||
+        !response.data.port
+      )
+        throw new KubeRpcError(
+          KubeRpcErrorEnum.MethodNotFound,
+          `Method ${method.name} not found in service ${serviceName}`,
+        );
+
+      const { host, port } = response.data;
+
+      const client = new Socket();
+
+      return new Promise((resolve, reject) => {
+        client.connect(port, host, () => {
+          const requestPayload = {
+            serviceName,
+            method,
+          };
+
+          client.write(JSON.stringify(requestPayload));
+        });
+
+        client.on("data", (data) => {
+          const response = JSON.parse(data.toString());
+          if (response.error) reject(response.error);
+          resolve(response);
+          client.end();
+        });
+
+        client.on("error", (error) => {
+          reject(error);
+        });
+      });
+    } catch (error: any) {
+      if (error instanceof KubeRpcError) throw error;
+
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.InternalServerError,
+        `Error invoking method ${method.name} for service ${serviceName}: ${error.message}`,
       );
     }
-
-    const { host, port } = response.data;
-
-    console.log("host", host, "port", port);
-
-    const client = new Socket();
-
-    return new Promise((resolve, reject) => {
-      client.connect(port, host, () => {
-        const requestPayload = {
-          serviceName,
-          method,
-        };
-
-        client.write(JSON.stringify(requestPayload));
-      });
-
-      client.on("data", (data) => {
-        const response = JSON.parse(data.toString());
-        resolve(response);
-        client.end();
-      });
-
-      client.on("error", (error) => {
-        reject(error);
-      });
-    });
   }
 }
