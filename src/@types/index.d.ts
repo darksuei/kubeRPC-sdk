@@ -1,8 +1,3 @@
-export interface KubeRPCConfig {
-  apiBaseURL: string;
-  port: number;
-}
-
 export interface RegisterMethodPayload {
   host: string;
   port: number;
@@ -36,6 +31,8 @@ export interface InvokeMethodPayload {
 
 export type MethodHandlerType = (...params: any[]) => any;
 
-export interface StartPayload {
+export interface KubeRPCConfig {
+  apiBaseURL: string;
   port: number;
+  serviceName: string;
 }
