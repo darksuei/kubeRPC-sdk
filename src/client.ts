@@ -1,19 +1,26 @@
 // kuberpc-sdk/index.ts
 import * as https from "https";
 import axios, { AxiosInstance, HttpStatusCode } from "axios";
-import { InvokeMethodPayload, KubeRPCConfig } from "./@types";
+import { InvokeMethodPayload, KubeRPCClientConfig } from "./@types";
 import { Socket } from "net";
 import { handleError, KubeRpcError } from "./utils/error";
 import { KubeRpcErrorEnum } from "./utils/constants";
+import { Retry, Timeout } from "./decorators";
+import { encode, decode } from "@msgpack/msgpack";
 
 export class KubeRPCClient {
   private apiClient: AxiosInstance;
   private httpsAgent = new https.Agent({
     rejectUnauthorized: false,
   });
-  private config: Omit<KubeRPCConfig, "port" | "serviceName">;
+  private config: Required<KubeRPCClientConfig>;
 
-  constructor({ apiBaseURL }: Omit<KubeRPCConfig, "port" | "serviceName">) {
+  constructor({
+    apiBaseURL,
+    retries,
+    timeout,
+    retryDelay,
+  }: KubeRPCClientConfig) {
     this.apiClient = axios.create({
       baseURL: apiBaseURL,
       headers: {
@@ -26,9 +33,16 @@ export class KubeRPCClient {
       (response) => response,
       (error) => handleError(error),
     );
-    this.config = { apiBaseURL };
+
+    this.config = {
+      apiBaseURL,
+      retries: retries || 3,
+      timeout: timeout || 10000,
+      retryDelay: retryDelay || 250,
+    };
   }
 
+  @Timeout()
   async validateEndpoint(endpoint?: string) {
     try {
       if (!endpoint)
@@ -68,6 +82,40 @@ export class KubeRPCClient {
     }
   }
 
+  async getServices() {
+    try {
+      const response = await this.apiClient.get(`/get-all-services`);
+
+      return response.data;
+    } catch (error: any) {
+      if (error instanceof KubeRpcError) throw error;
+
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.InternalServerError,
+        `Error fetching services: ${error.message}`,
+      );
+    }
+  }
+
+  async getSingleService(serviceName: string) {
+    try {
+      const response = await this.apiClient.get(
+        `/get-service?name=${serviceName}`,
+      );
+
+      return response.data;
+    } catch (error: any) {
+      if (error instanceof KubeRpcError) throw error;
+
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.InternalServerError,
+        `Error fetching service methods: ${error.message}`,
+      );
+    }
+  }
+
+  @Timeout()
+  @Retry()
   async invokeMethod({
     serviceName,
     method,
@@ -89,22 +137,24 @@ export class KubeRPCClient {
 
       const { host, port } = response.data;
 
-      const client = new Socket();
-
       return new Promise((resolve, reject) => {
+        const client = new Socket();
+
+        client.setNoDelay(true);
+
         client.connect(port, host, () => {
           const requestPayload = {
             serviceName,
             method,
           };
 
-          client.write(JSON.stringify(requestPayload));
+          client.write(encode(requestPayload));
         });
 
         client.on("data", (data) => {
-          const response = JSON.parse(data.toString());
+          const response = decode(data) as any;
           if (response.error) reject(response.error);
-          resolve(response);
+          if (!response.error) resolve(response);
           client.end();
         });
 

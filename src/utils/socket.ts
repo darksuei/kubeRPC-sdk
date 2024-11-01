@@ -1,5 +1,6 @@
 import net from "net";
 import { InvokeMethodPayload } from "../@types";
+import { decode, encode } from "@msgpack/msgpack";
 
 export class KubeConnectionHandler {
   recievedData(
@@ -7,8 +8,7 @@ export class KubeConnectionHandler {
     data: Buffer,
     methodHandlers: Map<string, Function>,
   ) {
-    console.log("Data received: ", data.toString());
-    const request: InvokeMethodPayload = JSON.parse(data.toString());
+    const request: InvokeMethodPayload = decode(data) as InvokeMethodPayload;
     const { serviceName, method } = request;
     const { params } = method;
 
@@ -17,12 +17,12 @@ export class KubeConnectionHandler {
     if (handler) {
       try {
         const result = handler(...params);
-        socket.write(JSON.stringify({ result }));
+        socket.write(encode(result));
       } catch (error) {
-        socket.write(JSON.stringify({ error: "Error executing method" }));
+        socket.write(encode({ error: "Error executing method" }));
       }
     } else {
-      socket.write(JSON.stringify({ error: "Method not found" }));
+      socket.write(encode({ error: "Method not found" }));
     }
   }
 

@@ -3,15 +3,16 @@ import * as https from "https";
 import axios, { AxiosInstance, HttpStatusCode } from "axios";
 import {
   DeleteMethodPayload,
+  KubeRPCServerConfig,
   MethodHandlerType,
   RegisterMethodPayload,
   RegisterMethodsPayload,
-  KubeRPCConfig,
 } from "./@types";
 import net from "net";
 import { handleError, KubeRpcError } from "./utils/error";
 import { ConnectionState, KubeRpcErrorEnum } from "./utils/constants";
 import { KubeConnectionHandler } from "./utils/socket";
+import { encode, decode } from "@msgpack/msgpack";
 
 export class KubeRPCServer {
   private apiClient: AxiosInstance;
@@ -21,9 +22,9 @@ export class KubeRPCServer {
   private methodHandlers = new Map<string, MethodHandlerType>();
   private server: net.Server | null = null;
   private connectionState = ConnectionState.DISCONNECTED;
-  private config: KubeRPCConfig;
+  private config: KubeRPCServerConfig;
 
-  constructor({ apiBaseURL, port, serviceName }: KubeRPCConfig) {
+  constructor({ apiBaseURL, port, serviceName }: KubeRPCServerConfig) {
     this.apiClient = axios.create({
       baseURL: apiBaseURL,
       headers: {
@@ -91,6 +92,8 @@ export class KubeRPCServer {
           this.connectionState = ConnectionState.ERROR;
           kubeConnectionHander.connectionTerminatedHandler(socket);
         });
+
+        socket.setNoDelay(true);
       });
 
       this.server.listen(this.config.port, () => {

@@ -1,4 +1,6 @@
-export function Timeout(milliseconds: number) {
+import { TimeoutConfigurable } from "../@types";
+
+export function Timeout() {
   return (
     _target: any,
     _propertyKey: string,
@@ -7,9 +9,9 @@ export function Timeout(milliseconds: number) {
     const originalMethod = descriptor.value;
 
     descriptor.value = async function (...args: any[]) {
+      const milliseconds = (this as TimeoutConfigurable).config.timeout;
       return new Promise((resolve, reject) => {
         const timeoutId = setTimeout(() => {
-          console.log(`Function timed out after ${milliseconds} milliseconds`);
           reject(
             new Error(`Function timed out after ${milliseconds} milliseconds`),
           );

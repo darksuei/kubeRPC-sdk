@@ -31,8 +31,23 @@ export interface InvokeMethodPayload {
 
 export type MethodHandlerType = (...params: any[]) => any;
 
-export interface KubeRPCConfig {
+export interface KubeRPCServerConfig {
   apiBaseURL: string;
   port: number;
   serviceName: string;
+}
+
+export interface KubeRPCClientConfig {
+  apiBaseURL: string;
+  retries?: number;
+  timeout?: number;
+  retryDelay?: number;
+}
+
+export interface TimeoutConfigurable {
+  config: { timeout: number };
+}
+
+export interface RetryConfigurable {
+  config: { retries: number; retryDelay: number };
 }
