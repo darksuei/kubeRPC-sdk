@@ -1,15 +1,20 @@
 {
   "name": "kuberpc-sdk",
-  "version": "1.0.0",
-  "description": "",
+  "version": "0.0.0",
+  "description": "Typescript SDK for the KubeRPC framework.",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "start": "node dist/index.js",
     "build": "rimraf dist && tsc"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["RPC", "KubeRPC", "SDK"],
+  "author": "Folarin Raphael",
   "license": "ISC",
+    "repository": {
+      "type": "git",
+      "url": "git+https://github.com/darksuei/kuberpc-sdk.git"
+    },
   "devDependencies": {
     "@types/node": "^22.8.5",
     "rimraf": "^6.0.1",

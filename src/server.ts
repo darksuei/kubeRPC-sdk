@@ -48,11 +48,6 @@ export class KubeRPCServer {
           `Invalid kubeRPC API endpoint: endpoint is not provided.`,
         );
 
-      // Strict service check
-      // const response = await this.apiClient.get(
-      //   `/check-service-exists?name=${this.config.serviceName}`,
-      // );
-
       const response = await this.apiClient.get("/health");
 
       if (response.status !== HttpStatusCode.Ok) {
