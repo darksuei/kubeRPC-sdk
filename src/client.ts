@@ -84,7 +84,7 @@ export class KubeRPCClient {
 
   async getServices() {
     try {
-      const response = await this.apiClient.get(`/get-all-services`);
+      const response = await this.apiClient.get(`/get-services`);
 
       return response.data;
     } catch (error: any) {
@@ -116,13 +116,13 @@ export class KubeRPCClient {
 
   @Timeout()
   @Retry()
-  async invokeMethod({
+  async invoke({
     serviceName,
     method,
   }: InvokeMethodPayload): Promise<any> {
     try {
       const response = await this.apiClient.get(
-        `/get-service-method?name=${serviceName}&method=${method.name}`,
+        `/get-method?name=${serviceName}&method=${method.name}`,
       );
 
       if (

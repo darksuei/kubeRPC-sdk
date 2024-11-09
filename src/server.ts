@@ -7,6 +7,8 @@ import {
   MethodHandlerType,
   RegisterMethodPayload,
   RegisterMethodsPayload,
+  UpdateMethodPayload,
+  UpdateServicePayload,
 } from "./@types";
 import net from "net";
 import { handleError, KubeRpcError } from "./utils/error";
@@ -24,7 +26,7 @@ export class KubeRPCServer {
   private connectionState = ConnectionState.DISCONNECTED;
   private config: KubeRPCServerConfig;
 
-  constructor({ apiBaseURL, port, serviceName }: KubeRPCServerConfig) {
+  constructor({ apiBaseURL, host, port, serviceName }: KubeRPCServerConfig) {
     this.apiClient = axios.create({
       baseURL: apiBaseURL,
       headers: {
@@ -37,7 +39,7 @@ export class KubeRPCServer {
       (response) => response,
       (error) => handleError(error),
     );
-    this.config = { apiBaseURL, port, serviceName };
+    this.config = { apiBaseURL, host, port, serviceName };
   }
 
   async validateEndpoint(endpoint?: string) {
@@ -48,7 +50,10 @@ export class KubeRPCServer {
           `Invalid kubeRPC API endpoint: endpoint is not provided.`,
         );
 
-      const response = await this.apiClient.get("/health");
+      const response = await this.apiClient.put(
+        `/update-service?name=${this.config.serviceName}`,
+        this.config,
+      );
 
       if (response.status !== HttpStatusCode.Ok) {
         throw new KubeRpcError(
@@ -104,16 +109,12 @@ export class KubeRPCServer {
     }
   }
 
-  async registerSingleMethod({
-    host,
-    port,
+  async registerMethod({
     serviceName,
     method,
   }: RegisterMethodPayload): Promise<void> {
     try {
       const payload = {
-        host,
-        port,
         service_name: serviceName,
         methods: [method],
       };
@@ -123,7 +124,7 @@ export class KubeRPCServer {
 
       // Associate the method with the service
       const { status } = await this.apiClient.post(
-        "/register-service-method",
+        "/register-methods",
         payload,
       );
 
@@ -143,15 +144,11 @@ export class KubeRPCServer {
   }
 
   async registerMethods({
-    host,
-    port,
     serviceName,
     methods,
   }: RegisterMethodsPayload): Promise<void> {
     try {
       const payload = {
-        host,
-        port,
         service_name: serviceName,
         methods,
       };
@@ -161,7 +158,7 @@ export class KubeRPCServer {
       });
 
       const { status } = await this.apiClient.post(
-        "/register-service-method",
+        "/register-methods",
         payload,
       );
 
@@ -188,7 +185,7 @@ export class KubeRPCServer {
       this.methodHandlers.delete(`${serviceName}:${methodName}`);
 
       const { status } = await this.apiClient.delete(
-        `/delete-service-method?name=${serviceName}&method=${methodName}`,
+        `/delete-method?name=${serviceName}&method=${methodName}`,
       );
 
       if (status !== HttpStatusCode.Ok)
@@ -202,6 +199,73 @@ export class KubeRPCServer {
       throw new KubeRpcError(
         KubeRpcErrorEnum.DeleteMethodError,
         `Error deleting method ${methodName} for service ${serviceName}: ${error.message}`,
+      );
+    }
+  }
+
+  async updateMethod({
+    serviceName,
+    methodName,
+    method,
+  }: UpdateMethodPayload): Promise<void> {
+    try {
+      if (method.handler) {
+        this.methodHandlers.delete(`${serviceName}:${method.name}`);
+        this.methodHandlers.set(
+          `${serviceName}:${method.name}`,
+          method.handler,
+        );
+      }
+
+      const { status } = await this.apiClient.put(
+        `/update-method?name=${serviceName}&method=${methodName}`,
+        method,
+      );
+
+      if (status !== HttpStatusCode.Ok)
+        throw new KubeRpcError(
+          KubeRpcErrorEnum.InternalServerError,
+          `Error updating method for service ${serviceName}`,
+        );
+    } catch (error: any) {
+      if (error instanceof KubeRpcError) throw error;
+
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.InternalServerError,
+        `Error updating method ${method.name} for service ${serviceName}: ${error.message}`,
+      );
+    }
+  }
+
+  async updateService({
+    serviceName,
+    host,
+    port,
+  }: UpdateServicePayload): Promise<void> {
+    try {
+      if (serviceName != this.config.serviceName) {
+        throw new Error("Invalid service name. Cannot update service name.");
+      }
+
+      const { status } = await this.apiClient.put(
+        `/update-service?name=${serviceName}`,
+        {
+          host,
+          port,
+        },
+      );
+
+      if (status !== HttpStatusCode.Ok)
+        throw new KubeRpcError(
+          KubeRpcErrorEnum.DeleteMethodError,
+          `Error updating service ${serviceName}`,
+        );
+    } catch (error: any) {
+      if (error instanceof KubeRpcError) throw error;
+
+      throw new KubeRpcError(
+        KubeRpcErrorEnum.InternalServerError,
+        `Error updating service ${serviceName}: ${error.message}`,
       );
     }
   }
